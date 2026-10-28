@@ -192,10 +192,9 @@ def materialize_extra_config(ctx: StepContext, scenario: dict) -> StepResult:
 
 
 @step
-def generate_samplesheet(ctx: StepContext, 
-                         scenario: dict,
-                         samplesheet: Annotated[Path, Out(SAMPLESHEET)]
-                         ) -> StepResult:
+def generate_samplesheet(
+    ctx: StepContext, scenario: dict, samplesheet: Annotated[Path, Out(SAMPLESHEET)]
+) -> StepResult:
     """Generates and writes SampleSheet.csv from the lane-specific samplesheet payload."""
     ss_payload = scenario["samplesheet_payload"]
     # The plan is stored as JSON, so a Path param arrives here as a str.
@@ -218,7 +217,9 @@ def generate_samplesheet(ctx: StepContext,
 
 
 @step
-def execute_demux(ctx: StepContext, scenario: dict, samplesheet: Annotated[Path, In(SAMPLESHEET)]) -> StepResult:
+def execute_demux(
+    ctx: StepContext, scenario: dict, samplesheet: Annotated[Path, In(SAMPLESHEET)]
+) -> StepResult:
     """Runs one Nextflow nf-core/demultiplex instance for this branch.
 
     There is one instance per lane/samplesheet branch: the branch's
@@ -336,7 +337,7 @@ def collect_results(ctx: StepContext, scenario: dict) -> StepResult:
 @step
 def symlink_fastqs(ctx: StepContext, scenario: dict) -> StepResult:
     """Symlinks fastq files from the branch's results directory to the common demux directory."""
-    settings = settings_from_env()
+    settings = load_realm_config().nextflow
     tag = branch_run_tag(
         scenario["canonical_flowcell_id"],
         str(scenario["lane_id"]),
@@ -388,7 +389,7 @@ def upload_results(ctx: StepContext, scenario: dict) -> StepResult:
     name = derive_xflowcell_name(runfolder_id)
     metadata = scenario.get("demultiplexing_metadata")
     if metadata is None:
-        settings = settings_from_env()
+        settings = load_realm_config().nextflow
         tag = branch_run_tag(
             scenario["canonical_flowcell_id"],
             str(scenario["lane_id"]),
