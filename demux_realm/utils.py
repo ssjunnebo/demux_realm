@@ -10,7 +10,6 @@ from typing import Any
 RUN_INFO_XML = "RunInfo.xml"
 RUN_PARAMETERS_XML = "RunParameters.xml"
 DEMUX_CONFIG_FILENAME = "extra_config_demultiplex.config"
-SAMPLESHEET_FILENAME = "SampleSheet.csv"
 
 # Settings index of a lane's only entry when it does not name one.
 DEFAULT_SETTINGS_INDEX = "0"

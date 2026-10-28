@@ -2,26 +2,26 @@ import csv
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from yggdrasil.flow.artifacts import SimpleArtifactRef
 from yggdrasil.flow.errors import PermanentStepError
 from yggdrasil.flow.model import StepResult
-from yggdrasil.flow.step import StepContext, step
+from yggdrasil.flow.step import In, Out, StepContext, step
 
+from .config import load_realm_config
 from .nextflow import (
     branch_outdir,
     branch_run_tag,
     branch_work_dir,
     build_nextflow_command,
+    parse_run_options,
     run_nextflow,
-    settings_from_env,
 )
 from .utils import (
     DEMUX_CONFIG_FILENAME,
     RUN_INFO_XML,
     RUN_PARAMETERS_XML,
-    SAMPLESHEET_FILENAME,
     build_lims_lookup,
     build_x_flowcell_payload,
     derive_xflowcell_name,
@@ -33,6 +33,12 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+SAMPLESHEET = SimpleArtifactRef(
+    key_name="samplesheet",
+    folder="samplesheets",
+    filename="SampleSheet.csv",
+)
 
 
 def _read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -186,52 +192,59 @@ def materialize_extra_config(ctx: StepContext, scenario: dict) -> StepResult:
 
 
 @step
-def generate_samplesheet(ctx: StepContext, scenario: dict) -> StepResult:
+def generate_samplesheet(ctx: StepContext, 
+                         scenario: dict,
+                         samplesheet: Annotated[Path, Out(SAMPLESHEET)]
+                         ) -> StepResult:
     """Generates and writes SampleSheet.csv from the lane-specific samplesheet payload."""
     ss_payload = scenario["samplesheet_payload"]
+    # The plan is stored as JSON, so a Path param arrives here as a str.
+    samplesheet = Path(samplesheet)
 
     validate_lane_payload(ss_payload, expected_lane=scenario.get("lane_id"))
     ss_text = render_bcl_convert_samplesheet(ss_payload)
 
-    ss_file = ctx.workdir / SAMPLESHEET_FILENAME
-    ss_file.write_text(ss_text)
+    # Write to the path supplied by the plan.
+    samplesheet.parent.mkdir(parents=True, exist_ok=True)
+    samplesheet.write_text(ss_text, encoding="utf-8")
 
     logger.info(
-        "Wrote SampleSheet.csv (%d bytes) to %s", ss_file.stat().st_size, ss_file
+        "Wrote SampleSheet.csv (%d bytes) to %s",
+        samplesheet.stat().st_size,
+        samplesheet,
     )
-    ctx.record_artifact(SimpleArtifactRef("samplesheet", "samplesheets"), path=ss_file)
-    return StepResult(metrics={"samplesheet_bytes": ss_file.stat().st_size})
+    ctx.record_artifact(SAMPLESHEET, path=samplesheet)
+    return StepResult(metrics={"samplesheet_bytes": samplesheet.stat().st_size})
 
 
 @step
-def execute_demux(ctx: StepContext, scenario: dict) -> StepResult:
+def execute_demux(ctx: StepContext, scenario: dict, samplesheet: Annotated[Path, In(SAMPLESHEET)]) -> StepResult:
     """Runs one Nextflow nf-core/demultiplex instance for this branch.
 
     There is one instance per lane/samplesheet branch: the branch's
-    samplesheet is re-rendered from the scenario payload into this step's
-    own workdir (runs are self-contained and never share files), and
-    Nextflow receives work and results directories derived from the branch
-    tag, so two branches never share work directories. Deployment settings
-    (pipeline, profile, common config, directory bases, skipped tools) come
-    from the DMX_NF_* environment; see demux_realm.nextflow.
+    samplesheet is the file this branch's generate_samplesheet step wrote
+    into its own work directory (see _branch_samplesheet), and Nextflow
+    receives work and results directories derived from the branch tag, so
+    two branches never share work directories.
+
+    Deployment settings (pipeline, profile, common config, directory bases)
+    come from the realm's JSON config; options that differ between runs
+    (skip_tools) come from the demux_sample_info document via the scenario's
+    ``nextflow`` entry. See demux_realm.config and demux_realm.nextflow.
     """
     runfolder_path = Path(scenario["hpc_runfolder_path"])
-    if not runfolder_path.is_dir():
+    # The plan is stored as JSON, so a Path param arrives here as a str.
+    samplesheet = Path(samplesheet)
+
+    try:
+        run_options = parse_run_options(scenario.get("nextflow"))
+    except ValueError as exc:
         raise PermanentStepError(
-            f"Runfolder path does not exist: {runfolder_path}",
-            advice="Check hpc_runfolder_path / DMX_HPC_BASE_PATH.",
-        )
+            f"Invalid nextflow options in scenario: {exc}",
+            advice="Fix the 'nextflow' object of the demux_sample_info document.",
+        ) from exc
 
-    # Re-render the branch samplesheet here rather than reading the
-    # generate_samplesheet step's workdir: cross-step paths are engine
-    # internals, and rendering is a pure function of the scenario payload.
-    ss_file = ctx.workdir / SAMPLESHEET_FILENAME
-    ss_file.write_text(render_bcl_convert_samplesheet(scenario["samplesheet_payload"]))
-    ctx.record_artifact(
-        SimpleArtifactRef("pipeline_samplesheet", "samplesheets"), path=ss_file
-    )
-
-    settings = settings_from_env()
+    settings = load_realm_config().nextflow
     tag = branch_run_tag(
         scenario["canonical_flowcell_id"],
         str(scenario["lane_id"]),
@@ -242,8 +255,9 @@ def execute_demux(ctx: StepContext, scenario: dict) -> StepResult:
         canonical_flowcell_id=scenario["canonical_flowcell_id"],
         lane_id=str(scenario["lane_id"]),
         settings_index=str(scenario["settings_index"]),
-        samplesheet=ss_file,
+        samplesheet=samplesheet,
         flowcell_path=runfolder_path,
+        run_options=run_options,
     )
     log_path = ctx.workdir / "nextflow_run.log"
     proc = run_nextflow(cmd, log_path)
@@ -271,7 +285,7 @@ def execute_demux(ctx: StepContext, scenario: dict) -> StepResult:
 @step
 def collect_results(ctx: StepContext, scenario: dict) -> StepResult:
     """Collects demultiplexing artifacts and basic metrics from the branch's results directory."""
-    settings = settings_from_env()
+    settings = load_realm_config().nextflow
     tag = branch_run_tag(
         scenario["canonical_flowcell_id"],
         str(scenario["lane_id"]),

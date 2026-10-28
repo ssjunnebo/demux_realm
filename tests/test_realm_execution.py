@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from demux_realm.config import realm_config_from_mapping
 from demux_realm.handler import DemuxHandler
 from demux_realm.recipes import UPSERT_X_FLOWCELL, VALIDATE_RUNFOLDER
 from realm_support import (
@@ -23,6 +24,7 @@ from realm_support import (
     planning_ctx,
 )
 
+from demux_realm import handler as handler_module
 from demux_realm import steps as realm_steps
 from yggdrasil.core import engine as engine_module
 from yggdrasil.core.engine import Engine
@@ -92,7 +94,11 @@ def x_flowcells(monkeypatch):
 
 @pytest.fixture
 def ws(tmp_path, monkeypatch):
-    monkeypatch.delenv("DMX_HPC_BASE_PATH", raising=False)
+    monkeypatch.setattr(
+        handler_module,
+        "load_realm_config",
+        lambda: realm_config_from_mapping(None),
+    )
     monkeypatch.setenv("YGG_WORK_ROOT", str(tmp_path / "work"))
     monkeypatch.setenv("YGG_EVENT_SPOOL", str(tmp_path / "spool"))
     incoming = tmp_path / "incoming"
